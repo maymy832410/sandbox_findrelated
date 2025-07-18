@@ -1526,7 +1526,7 @@ def check_irrelevant_and_warn(prompt, pdf_text, extracted_title, selected_articl
 
             try:
                 response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
+                    model="gpt-4o-mini",
                     messages=[
                         {"role": "system", "content": "You are a domain expert reviewer. Respond in the format: 'specific: yes/no, general: yes/no'."},
                         {"role": "user", "content": question}
@@ -1559,7 +1559,7 @@ def handle_review(prompt, text):
     try:
         combined = f"{prompt}\n\n---\n\n{text}"
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": combined}],
             max_tokens=1500,
             temperature=0.4
@@ -1622,7 +1622,7 @@ def extract_title_from_pdf(file_path):
             print("[ERROR] No readable text extracted from the first 2 pages of the PDF.")
             return "[ERROR] No readable text extracted from the first 2 pages of the PDF."
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "Extract only the title of the academic paper from the following text. Do not include authors or journal names."},
                 {"role": "user", "content": text}
