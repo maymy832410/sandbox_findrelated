@@ -202,6 +202,39 @@ def backup_to_supabase():
         traceback.print_exc()
         return False
 
+def ensure_articles_table_exists():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Create table with all columns
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS articles (
+            Title TEXT,
+            Authors TEXT,
+            DOI TEXT PRIMARY KEY,
+            Citations INTEGER,
+            Content TEXT,
+            Publisher TEXT,
+            Journal TEXT,
+            Embedding TEXT,
+            Abstract TEXT
+        )
+    """)
+    
+    # Check if Abstract column exists, if not add it
+    cursor.execute("PRAGMA table_info(articles)")
+    columns = [row[1] for row in cursor.fetchall()]
+    
+    if "Abstract" not in columns:
+        print("[INFO] Adding Abstract column to existing table...")
+        cursor.execute("ALTER TABLE articles ADD COLUMN Abstract TEXT DEFAULT ''")
+    
+    conn.commit()
+    conn.close()
+
+ensure_articles_table_exists()
+
+
 def restore_from_supabase():
     """Restore database from Supabase"""
     try:
@@ -320,6 +353,57 @@ def check_supabase_status():
             "connection": False
         }
 
+def load_articles_from_db():
+    global article_cache, unique_journals_for_ui
+    print("[DEBUG] Loading articles from DB...")
+    conn = sqlite3.connect(DB_PATH)
+    
+    # Ensure Abstract column exists
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(articles)")
+    columns = [row[1] for row in cursor.fetchall()]
+    
+    if "Abstract" not in columns:
+        print("[INFO] Adding Abstract column...")
+        cursor.execute("ALTER TABLE articles ADD COLUMN Abstract TEXT DEFAULT ''")
+        conn.commit()
+    
+    df = pd.read_sql_query("SELECT * FROM articles", conn)
+    conn.close()
+    print(f"[DEBUG] Loaded {len(df)} articles from DB.")
+    
+    if not df.empty:
+        def smart_load_embedding(x):
+            try:
+                if isinstance(x, str):
+                    return np.array(json.loads(x))
+                elif isinstance(x, bytes):
+                    return np.array(pickle.loads(x))
+            except Exception as e:
+                print(f"[ERROR] Could not decode embedding: {e}")
+                return None
+            return None
+        
+        df["Embedding"] = df["Embedding"].apply(smart_load_embedding)
+        
+        # Ensure Abstract column exists and has data
+        if "Abstract" not in df.columns:
+            df["Abstract"] = ""
+        else:
+            # Fill NaN values with empty string
+            df["Abstract"] = df["Abstract"].fillna("")
+        
+        # Debug: Check how many articles have abstracts
+        abstract_count = (df["Abstract"].astype(str).str.len() > 10).sum()  # At least 10 chars
+        print(f"[DEBUG] Articles with meaningful abstracts: {abstract_count}/{len(df)}")
+            
+        article_cache["df"] = df
+        unique_journals_for_ui = sorted(df["Journal"].dropna().unique().tolist())
+    else:
+        article_cache["df"] = pd.DataFrame()
+        unique_journals_for_ui = []
+    print(f"[DEBUG] Journals in cache: {unique_journals_for_ui}")
+
 def smart_database_initialization():
     """Smart database initialization with Supabase fallback"""
     print("[INIT] 🚀 Starting smart database initialization...")
@@ -363,37 +447,6 @@ print(f"[INIT] 🎉 Database initialized: {init_result}")
 
 # ------------------ ENHANCED DATABASE SETUP WITH SUPABASE -------------------
 
-def ensure_articles_table_exists():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # Create table with all columns
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS articles (
-            Title TEXT,
-            Authors TEXT,
-            DOI TEXT PRIMARY KEY,
-            Citations INTEGER,
-            Content TEXT,
-            Publisher TEXT,
-            Journal TEXT,
-            Embedding TEXT,
-            Abstract TEXT
-        )
-    """)
-    
-    # Check if Abstract column exists, if not add it
-    cursor.execute("PRAGMA table_info(articles)")
-    columns = [row[1] for row in cursor.fetchall()]
-    
-    if "Abstract" not in columns:
-        print("[INFO] Adding Abstract column to existing table...")
-        cursor.execute("ALTER TABLE articles ADD COLUMN Abstract TEXT DEFAULT ''")
-    
-    conn.commit()
-    conn.close()
-
-ensure_articles_table_exists()
 
 # ENHANCED: Unified save function with auto-backup
 def save_articles_to_db(df, auto_backup=True):
@@ -501,56 +554,7 @@ def save_articles_to_db(df, auto_backup=True):
     
     return saved_count, failed_count
     
-def load_articles_from_db():
-    global article_cache, unique_journals_for_ui
-    print("[DEBUG] Loading articles from DB...")
-    conn = sqlite3.connect(DB_PATH)
-    
-    # Ensure Abstract column exists
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(articles)")
-    columns = [row[1] for row in cursor.fetchall()]
-    
-    if "Abstract" not in columns:
-        print("[INFO] Adding Abstract column...")
-        cursor.execute("ALTER TABLE articles ADD COLUMN Abstract TEXT DEFAULT ''")
-        conn.commit()
-    
-    df = pd.read_sql_query("SELECT * FROM articles", conn)
-    conn.close()
-    print(f"[DEBUG] Loaded {len(df)} articles from DB.")
-    
-    if not df.empty:
-        def smart_load_embedding(x):
-            try:
-                if isinstance(x, str):
-                    return np.array(json.loads(x))
-                elif isinstance(x, bytes):
-                    return np.array(pickle.loads(x))
-            except Exception as e:
-                print(f"[ERROR] Could not decode embedding: {e}")
-                return None
-            return None
-        
-        df["Embedding"] = df["Embedding"].apply(smart_load_embedding)
-        
-        # Ensure Abstract column exists and has data
-        if "Abstract" not in df.columns:
-            df["Abstract"] = ""
-        else:
-            # Fill NaN values with empty string
-            df["Abstract"] = df["Abstract"].fillna("")
-        
-        # Debug: Check how many articles have abstracts
-        abstract_count = (df["Abstract"].astype(str).str.len() > 10).sum()  # At least 10 chars
-        print(f"[DEBUG] Articles with meaningful abstracts: {abstract_count}/{len(df)}")
-            
-        article_cache["df"] = df
-        unique_journals_for_ui = sorted(df["Journal"].dropna().unique().tolist())
-    else:
-        article_cache["df"] = pd.DataFrame()
-        unique_journals_for_ui = []
-    print(f"[DEBUG] Journals in cache: {unique_journals_for_ui}")
+
 
 # ENHANCED: Supabase UI functions
 def manual_supabase_backup():
@@ -651,6 +655,35 @@ def refresh_journal_filter():
     except Exception as e:
         print(f"[ERROR] Failed to refresh journal filter: {e}")
         return gr.update()
+        
+def extract_both(pdf):
+    import tempfile
+    import shutil
+
+    if not pdf:
+        print("[ERROR] No PDF uploaded.")
+        return "", ""
+
+    try:
+        # Create a secure temp copy of the uploaded file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            shutil.copyfile(pdf.name, tmp.name)
+            temp_path = tmp.name
+
+        # Extract title and text
+        title = extract_title_from_pdf(temp_path)
+        text = extract_text_from_pdf(temp_path)
+
+        if not title:
+            print("[WARNING] Title extraction returned empty string.")
+        if not text:
+            print("[WARNING] Full text extraction returned empty string.")
+
+        return title or "", text or ""
+
+    except Exception as e:
+        print(f"[ERROR] PDF extraction failed: {e}")
+        return "", ""
 
 def extract_both_with_refresh(pdf):
     """Extract title and text, then refresh journal filter"""
@@ -1645,34 +1678,7 @@ def extract_text_from_pdf(file_path):
     except Exception as e:
         return f"[ERROR] Failed to extract PDF text: {e}"
 
-def extract_both(pdf):
-    import tempfile
-    import shutil
 
-    if not pdf:
-        print("[ERROR] No PDF uploaded.")
-        return "", ""
-
-    try:
-        # Create a secure temp copy of the uploaded file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            shutil.copyfile(pdf.name, tmp.name)
-            temp_path = tmp.name
-
-        # Extract title and text
-        title = extract_title_from_pdf(temp_path)
-        text = extract_text_from_pdf(temp_path)
-
-        if not title:
-            print("[WARNING] Title extraction returned empty string.")
-        if not text:
-            print("[WARNING] Full text extraction returned empty string.")
-
-        return title or "", text or ""
-
-    except Exception as e:
-        print(f"[ERROR] PDF extraction failed: {e}")
-        return "", ""
 # --------- Article Stats Logic ---------
 def get_article_stats():
     try:
